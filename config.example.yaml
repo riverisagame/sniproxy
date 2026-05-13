@@ -1,0 +1,11 @@
+listen: ":443"
+default_backend: "127.0.0.1:8443"
+
+routes:
+  - sni:
+      - "api.example.com"
+      - "admin.example.com"
+    backend: "10.0.0.1:443"
+  - sni:
+      - "*.example.com"
+    backend: "10.0.0.2:8443"
