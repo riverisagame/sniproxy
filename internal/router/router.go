@@ -44,3 +44,20 @@ func (r *Router) Lookup(sni string) string {
 	}
 	return r.def
 }
+
+// UniqueBackends returns deduplicated backend addresses.
+func (r *Router) UniqueBackends() []string {
+	seen := make(map[string]bool)
+	seen[r.def] = true
+	for _, b := range r.exact {
+		seen[b] = true
+	}
+	for _, b := range r.wildcard {
+		seen[b] = true
+	}
+	out := make([]string, 0, len(seen))
+	for b := range seen {
+		out = append(out, b)
+	}
+	return out
+}
