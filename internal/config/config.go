@@ -4,6 +4,9 @@
 //
 //   listen: ":443"
 //   default_backend: "127.0.0.1:8443"
+//   max_connections: 0              # 最大并发连接,0=不限制
+//   log_level: "error"             # debug | info | warn | error
+//   log_file: ""                   # 日志文件路径,空=仅 stdout
 //   routes:
 //     - sni:
 //         - "api.example.com"

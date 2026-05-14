@@ -1,5 +1,8 @@
 listen: ":443"
 default_backend: "127.0.0.1:8443"
+max_connections: 0
+log_level: "error"
+log_file: ""
 
 routes:
   - sni:
