@@ -9,11 +9,21 @@ permissions:
 
 jobs:
   build:
-    name: Build (${{ matrix.arch }})
+    name: Build (${{ matrix.pair.arch }}${{ matrix.pair.goamd64 && format('-{0}', matrix.pair.goamd64) }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [amd64, arm64]
+        pair:
+          - arch: amd64
+            goamd64: v1
+          - arch: amd64
+            goamd64: v2
+          - arch: amd64
+            goamd64: v3
+          - arch: amd64
+            goamd64: v4
+          - arch: arm64
+            goamd64: ""
     steps:
       - uses: actions/checkout@v4
 
@@ -24,18 +34,32 @@ jobs:
       - name: Build
         env:
           GOOS: linux
-          GOARCH: ${{ matrix.arch }}
+          GOARCH: ${{ matrix.pair.arch }}
+          GOAMD64: ${{ matrix.pair.goamd64 }}
           CGO_ENABLED: 0
         run: |
-          go build -ldflags="-s -w" -o "sniproxy-linux-${{ matrix.arch }}" ./cmd/sniproxy/
+          SUFFIX="${{ matrix.pair.goamd64 }}"
+          if [ -z "$SUFFIX" ]; then
+            SUFFIX=""
+          else
+            SUFFIX="-$SUFFIX"
+          fi
+          go build -ldflags="-s -w" -o "sniproxy-linux-${{ matrix.pair.arch }}${SUFFIX}" ./cmd/sniproxy/
 
       - name: Checksum
-        run: sha256sum "sniproxy-linux-${{ matrix.arch }}" > "sniproxy-linux-${{ matrix.arch }}.sha256"
+        run: |
+          SUFFIX="${{ matrix.pair.goamd64 }}"
+          if [ -z "$SUFFIX" ]; then
+            SUFFIX=""
+          else
+            SUFFIX="-$SUFFIX"
+          fi
+          sha256sum "sniproxy-linux-${{ matrix.pair.arch }}${SUFFIX}" > "sniproxy-linux-${{ matrix.pair.arch }}${SUFFIX}.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sniproxy-linux-${{ matrix.arch }}
-          path: sniproxy-linux-${{ matrix.arch }}*
+          name: sniproxy-linux-${{ matrix.pair.arch }}${{ matrix.pair.goamd64 && format('-{0}', matrix.pair.goamd64) || '' }}
+          path: sniproxy-linux-${{ matrix.pair.arch }}${{ matrix.pair.goamd64 && format('-{0}', matrix.pair.goamd64) || '' }}*
 
   release:
     name: Create Release
