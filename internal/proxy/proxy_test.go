@@ -39,7 +39,7 @@ func TestProxySNIRouting(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go AcceptLoop(ctx, ln, r, logger)
+	go AcceptLoop(ctx, ln, NewRouterRef(r), 0, logger)
 	time.Sleep(100 * time.Millisecond) // let accept loop start
 
 	// Test exact match: connect with SNI "api.example.com"

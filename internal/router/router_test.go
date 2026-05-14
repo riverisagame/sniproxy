@@ -72,3 +72,28 @@ func TestNumericWildcardIsExact(t *testing.T) {
 		t.Fatalf("asterisk in host treated as exact, got %s", got)
 	}
 }
+
+func TestNoDefaultBackend(t *testing.T) {
+	r := New(map[string][]string{
+		"10.0.0.1:443": {"api.example.com"},
+	}, "")
+	if got := r.Lookup("api.example.com"); got != "10.0.0.1:443" {
+		t.Fatalf("expected 10.0.0.1:443, got %s", got)
+	}
+	if got := r.Lookup("unknown.com"); got != "" {
+		t.Fatalf("expected empty string for no default, got %s", got)
+	}
+}
+
+func TestUniqueBackendsSkipsEmptyDef(t *testing.T) {
+	r := New(map[string][]string{
+		"10.0.0.1:443": {"api.example.com"},
+	}, "")
+	backends := r.UniqueBackends()
+	if len(backends) != 1 {
+		t.Fatalf("expected 1 backend, got %d: %v", len(backends), backends)
+	}
+	if backends[0] != "10.0.0.1:443" {
+		t.Fatalf("expected 10.0.0.1:443, got %s", backends[0])
+	}
+}

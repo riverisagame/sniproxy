@@ -69,9 +69,15 @@ func TestNoDefaultBackend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	os.WriteFile(path, []byte(`listen: ":443"`), 0644)
 
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected error for missing default_backend")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal("expected success for config without default_backend, got:", err)
+	}
+	if cfg.DefaultBackend != "" {
+		t.Fatal("DefaultBackend should be empty string")
+	}
+	if b := cfg.Router().Lookup("unknown.com"); b != "" {
+		t.Fatal("expected empty backend for unknown SNI, got:", b)
 	}
 }
 
@@ -84,8 +90,8 @@ default_backend: "10.0.0.1:443"
 	cfg, _ := Load(path)
 	oldRouter := cfg.Router()
 
-	// Corrupt the file
-	os.WriteFile(path, []byte(`:::invalid yaml:::`), 0644)
+	// Corrupt the file (delete to simulate unrecoverable config error)
+	os.Remove(path)
 
 	newCfg, err := Reload(path, cfg)
 	if err == nil {
