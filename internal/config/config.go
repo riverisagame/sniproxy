@@ -18,8 +18,9 @@
 package config
 
 import (
-	"fmt" // 格式化错误消息
-	"os"  // 读文件
+	"fmt"   // 格式化错误消息
+	"os"    // 读文件
+	"slices" // 泛型 slice 工具
 
 	"gopkg.in/yaml.v3" // 第三方库,用于解析 YAML 格式
 
@@ -40,6 +41,8 @@ type Config struct {
 	DefaultBackend string  `yaml:"default_backend"` // 默认后端,可选
 	MaxConnections int     `yaml:"max_connections"` // 最大并发连接,0=不限制
 	Routes         []Route `yaml:"routes"`          // 路由规则数组
+	LogLevel       string  `yaml:"log_level"`       // 日志级别: debug/info/warn/error,默认 "error"
+	LogFile        string  `yaml:"log_file"`        // 日志文件路径,默认空(仅 stdout)
 
 	r *router.Router // 内部路由器(不导出,用 Router() 方法访问)
 }
@@ -80,6 +83,15 @@ func Load(path string) (*Config, error) {
 	// 如果用户没写 listen 字段,就用 ":443" (HTTPS 标准端口)
 	if cfg.Listen == "" {
 		cfg.Listen = ":443"
+	}
+	if cfg.LogLevel == "" {
+		cfg.LogLevel = "error"
+	}
+
+	// 验证日志级别合法值
+	validLevels := []string{"debug", "info", "warn", "error"}
+	if !slices.Contains(validLevels, cfg.LogLevel) {
+		return nil, fmt.Errorf("invalid log_level %q: must be one of %v", cfg.LogLevel, validLevels)
 	}
 
 	// 第四步：根据路由规则构建路由器

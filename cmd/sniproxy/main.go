@@ -41,6 +41,21 @@ func newAtomicLevel(l slog.Level) *atomicLevel {
 	return a
 }
 
+// parseLogLevel 把配置文件中的字符串转换成 slog.Level。
+// 合法值已在 config.Load 中校验，这里不会收到无效值。
+func parseLogLevel(s string) slog.Level {
+	switch s {
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn":
+		return slog.LevelWarn
+	default:
+		return slog.LevelError
+	}
+}
+
 // main() 是程序的入口函数。当你运行 ./sniproxy 时,这个函数第一个执行。
 func main() {
 	// ============================================================
@@ -62,38 +77,52 @@ func main() {
 	flag.BoolFunc("vvv", "debug log level + dump config", func(string) error { verbosity = max(verbosity, 3); return nil })
 	// --log-format：日志输出格式,"text"(人类可读) 或 "json"(机器可读)
 	logFormat := flag.String("log-format", "text", "log format: text or json")
-	// --log-file：日志写入文件路径,默认空表示输出到终端(标准错误输出)
+	// --log-file：日志写入文件路径,默认空表示输出到终端(标准输出)
 	logFile := flag.String("log-file", "", "log file path (default: stdout)")
 	flag.Parse() // 真正解析命令行,这一行之后上面的变量才有值
 
 	// ============================================================
-	// 第二部分：初始化日志系统
+	// 第二部分：加载配置文件
+	// 配置文件(YAML格式)定义了"监听哪个端口"和"把请求转发到哪些后端服务器"
+	// ============================================================
+
+	cfg, err := config.Load(*configPath) // 读 YAML 文件,解析成 Config 结构体
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// ============================================================
+	// 第三部分：初始化日志系统
 	// 日志就是程序在运行过程中"写日记",记录发生了什么。
 	// 好的日志让你能知道程序在干什么、出了什么问题。
 	// ============================================================
 
-	// 默认只输出 Error 级别(最严重的错误)的日志
-	level := slog.LevelError
-	switch verbosity {
-	case 1:
-		level = slog.LevelInfo // -v：也输出 Info 级别(一般信息)
-	case 2, 3:
-		level = slog.LevelDebug // -vv / -vvv：也输出 Debug 级别(调试细节)
+	// 优先级：CLI 参数 > 配置文件 > 默认值
+	level := parseLogLevel(cfg.LogLevel) // 配置文件值（默认 "error"）
+	if verbosity >= 1 {
+		level = slog.LevelInfo
 	}
-	// 原子日志级别——支持 SIGUSR1 并发安全切换,避免 data race
+	if verbosity >= 2 {
+		level = slog.LevelDebug
+	}
+	logPath := *logFile
+	if logPath == "" {
+		logPath = cfg.LogFile
+	}
+
 	logLeveler := newAtomicLevel(level)
 	handlerOpts := &slog.HandlerOptions{Level: logLeveler}
 
-	// 创建日志"处理器"(Handler),决定日志写到哪里、什么格式
 	var handler slog.Handler
 	if *logFormat == "json" {
-		handler = slog.NewJSONHandler(os.Stderr, handlerOpts)
+		handler = slog.NewJSONHandler(os.Stdout, handlerOpts)
 	} else {
-		handler = slog.NewTextHandler(os.Stderr, handlerOpts)
+		handler = slog.NewTextHandler(os.Stdout, handlerOpts)
 	}
 
-	if *logFile != "" {
-		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if logPath != "" {
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "open log file: %v\n", err)
 			os.Exit(1)
@@ -105,40 +134,27 @@ func main() {
 			handler = slog.NewTextHandler(f, handlerOpts)
 		}
 	}
-	// 用处理器创建最终的 Logger 对象,之后都用 logger.Info() / logger.Error() 写日志
 	logger := slog.New(handler)
 
+	logger.Info("config loaded", "listen", cfg.Listen)
+
+	// -vvv 模式下额外打印默认后端地址
+	if verbosity >= 3 {
+		logger.Debug("config dump", "default_backend", cfg.DefaultBackend)
+	}
+
 	// ============================================================
-	// 第三部分：可选的后台化(Daemonize)
+	// 第四部分：可选的后台化(Daemonize)
 	// "守护进程"就是在后台默默运行的程序,不和终端绑定。
 	// 类似 Windows 的"服务"或 macOS 的后台进程。
 	// ============================================================
 
 	if *daemonize {
-		// daemon() 函数定义在 platform_linux.go 中
-		// 它会"分叉"出一个子进程,然后父进程退出
 		if err := daemon(); err != nil {
 			logger.Error("daemonize failed", "error", err)
 			os.Exit(1)
 		}
-		logger.Info("daemonized", "pid", os.Getpid()) // pid = 进程ID,操作系统给每个程序分配的唯一编号
-	}
-
-	// ============================================================
-	// 第四部分：加载配置文件
-	// 配置文件(YAML格式)定义了"监听哪个端口"和"把请求转发到哪些后端服务器"
-	// ============================================================
-
-	cfg, err := config.Load(*configPath) // 读 YAML 文件,解析成 Config 结构体
-	if err != nil {
-		logger.Error("load config failed", "error", err)
-		os.Exit(1)
-	}
-	logger.Info("config loaded", "listen", cfg.Listen) // 打印监听的地址,比如 :443
-
-	// -vvv 模式下额外打印默认后端地址
-	if verbosity >= 3 {
-		logger.Debug("config dump", "default_backend", cfg.DefaultBackend)
+		logger.Info("daemonized", "pid", os.Getpid())
 	}
 
 	// ============================================================
