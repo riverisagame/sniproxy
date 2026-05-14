@@ -202,8 +202,9 @@ func main() {
 			case syscall.SIGINT, syscall.SIGTERM:
 				// SIGINT(用户按 Ctrl+C) 或 SIGTERM(系统要求退出)
 				logger.Info("shutting down...")
-				cancel() // 通知所有工作 goroutine 停止
-				return   // 退出信号处理循环
+				cancel()   // 通知所有工作 goroutine 停止
+				ln.Close() // 关闭监听器，让 Accept() 立即返回
+				return     // 退出信号处理循环
 
 			default:
 				// SIGUSR1：切换日志级别（Debug ↔ 原始级别）
