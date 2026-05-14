@@ -72,5 +72,6 @@ func daemon() error {
 
 	// Setsid() 创建一个新的"会话"(session),让进程彻底脱离终端。
 	// 这确保了即使你关闭了启动它的终端窗口,它也不会被杀死。
-	return syscall.Setsid()
+	_, err := syscall.Setsid()
+	return err
 }
