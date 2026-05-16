@@ -9,6 +9,8 @@ import (
 	"fmt"        // 格式化输入输出,类似 Python 的 print()
 	"log/slog"   // Go 1.21+ 自带的结构化日志库,记录程序运行时的各种信息
 	"net"        // 网络操作的核心库,提供 Listen(监听)、Accept(接受连接)、Dial(拨号连接)
+	"net/http"   // HTTP 服务,用于 pprof 调试端点
+	_ "net/http/pprof" // pprof 性能分析,自动注册 /debug/pprof/ 路径
 	"os"         // 操作系统相关操作,比如读取环境变量、退出程序
 	"os/signal"  // 监听操作系统发来的"信号",比如 Ctrl+C(SIGINT)、SIGHUP(重新加载配置)
 	"sync/atomic" // 原子操作,用于并发安全的日志级别切换
@@ -111,6 +113,14 @@ func main() {
 		logPath = cfg.LogFile
 	}
 
+	if *daemonize && logPath == "" {
+		logPath = "/var/log/sniproxy/sniproxy.log"
+		if err := os.MkdirAll("/var/log/sniproxy", 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "create log dir: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	logLeveler := newAtomicLevel(level)
 	handlerOpts := &slog.HandlerOptions{Level: logLeveler}
 
@@ -150,6 +160,7 @@ func main() {
 	// ============================================================
 
 	if *daemonize {
+		fmt.Fprintf(os.Stderr, "Logging to %s\n", logPath)
 		if err := daemon(); err != nil {
 			logger.Error("daemonize failed", "error", err)
 			os.Exit(1)
@@ -244,7 +255,15 @@ func main() {
 
 	logger.Info("proxy started", "listen", cfg.Listen)
 
-	// 这里会阻塞(卡住)直到程序收到关闭信号
+	if cfg.DebugAddr != "" {
+		go func() {
+			logger.Info("pprof listener", "addr", cfg.DebugAddr)
+			if err := http.ListenAndServe(cfg.DebugAddr, nil); err != nil {
+				logger.Error("pprof server", "error", err)
+			}
+		}()
+	}
+
 	if err := proxy.AcceptLoop(ctx, ln, routerRef, cfg.MaxConnections, logger); err != nil {
 		logger.Error("accept loop error", "error", err)
 	}

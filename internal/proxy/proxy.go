@@ -49,6 +49,8 @@ const (
 	// 如果连续几次没回应,就认为连接断了,释放资源。
 	// 这就像两个人在打电话,每15秒说一声"喂,还在吗？"
 	keepAliveIdle = 15 * time.Second
+
+	idleTimeout = 5 * time.Minute
 )
 
 // tlsBufPool 复用 TLS 记录缓冲区，消除每个连接 ~16KB 的堆分配。
@@ -59,6 +61,8 @@ var tlsBufPool = sync.Pool{
 		return &buf
 	},
 }
+
+var connCounter atomic.Uint64
 
 // RouterRef 持有一个原子指针指向当前的路由表,支持热加载。
 // SIGHUP 信号触发配置重载时,新的 Router 通过 Store 写入,
@@ -222,14 +226,15 @@ func handleConnection(ctx context.Context, clientConn net.Conn, ref *RouterRef, 
 	// 调用我们写的 sni.Parse 函数从完整的 TLS 记录中提取域名
 	// ============================================================
 
-	sniHost, err := sni.Parse(buf)
+	sniBytes, err := sni.ParseBytes(buf)
 	if err != nil {
 		tlsBufPool.Put(bufPtr)
 		logger.Debug("SNI parse failed", "remote", remote, "error", err)
 		return
 	}
 
-	backend := ref.Load().Lookup(sniHost)
+	backend := ref.Load().LookupBytes(sniBytes)
+	sniHost := string(sniBytes)
 	if backend == "" {
 		tlsBufPool.Put(bufPtr)
 		stealthDrop(ctx, tcpConn, logger, remote, sniHost)
@@ -269,13 +274,18 @@ func handleConnection(ctx context.Context, clientConn net.Conn, ref *RouterRef, 
 	// 步骤7：调优 socket 缓冲区 + TCP KeepAlive
 	// ============================================================
 
-	setSocketBuf(tcpConn)
-	setSocketBuf(btcpConn)
+	setSocketBuf(tcpConn, logger)
+	setSocketBuf(btcpConn, logger)
 	setKeepAlive(tcpConn)
 	setKeepAlive(btcpConn)
 
 	// 记录连接建立成功的日志
-	logger.Info("connected", "remote", remote, "sni", sniHost, "backend", backend)
+	logger.Debug("connected", "remote", remote, "sni", sniHost, "backend", backend)
+
+	n := connCounter.Add(1)
+	if n%1000 == 0 {
+		logger.Info("connection sample", "count", n, "remote", remote, "sni", sniHost, "backend", backend)
+	}
 
 	// ============================================================
 	// 步骤8：重放 ClientHello 到后端
@@ -290,6 +300,13 @@ func handleConnection(ctx context.Context, clientConn net.Conn, ref *RouterRef, 
 		return
 	}
 	tlsBufPool.Put(bufPtr) // buffer no longer needed after replay
+
+	if err := tcpConn.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
+		logger.Debug("set idle timeout on client", "remote", remote, "error", err)
+	}
+	if err := btcpConn.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
+		logger.Debug("set idle timeout on backend", "remote", remote, "error", err)
+	}
 
 	// ============================================================
 	// 步骤9：双向转发数据
@@ -314,47 +331,53 @@ func handleConnection(ctx context.Context, clientConn net.Conn, ref *RouterRef, 
 	start := time.Now()        // 记录转发开始时间,用于最后的统计
 	var rx, tx int64           // rx = 客户端发来的总字节数, tx = 后端返回的总字节数
 
-	// done 通道用于等待两个方向的拷贝完成
-	// 容量为2——两个 goroutine 各发送一个信号
-	done := make(chan struct{}, 2)
+	// 用 WaitGroup 替代 per-connection channel，消除堆分配
+	var wg sync.WaitGroup
+	wg.Add(2)
 
 	// goroutine A：客户端 → 后端(rx 方向)
 	go func() {
+		defer wg.Done()
 		n, err := io.Copy(btcpConn, tcpConn)
 		rx = n
 		if err != nil {
 			logger.Debug("copy client->backend", "remote", remote, "sni", sniHost, "error", err)
 		}
-		done <- struct{}{}
 	}()
 
 	// goroutine B：后端 → 客户端(tx 方向)
 	go func() {
+		defer wg.Done()
 		n, err := io.Copy(tcpConn, btcpConn)
 		tx = n
 		if err != nil {
 			logger.Debug("copy backend->client", "remote", remote, "sni", sniHost, "error", err)
 		}
-		done <- struct{}{}
+	}()
+
+	doneCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(doneCh)
 	}()
 
 	// 等待两个方向都完成，或收到关闭信号
 	select {
-	case <-done:
-		// 有一个方向先完成了
+	case <-doneCh:
+		// 两个方向都完成了
 	case <-ctx.Done():
 		// 收到关闭信号——关闭两端连接，让 io.Copy 立即返回
 		tcpConn.Close()
 		btcpConn.Close()
 	}
-	<-done
+	<-doneCh
 
 	// 记录连接的"结账信息"：
 	//   rx   = 客户端发来了多少字节
 	//   tx   = 后端返回了多少字节
 	//   dur  = 连接持续了多长时间
 	dur := time.Since(start)
-	logger.Info("close", "remote", remote, "sni", sniHost, "rx", rx, "tx", tx, "dur", dur.Round(time.Millisecond).String())
+	logger.Debug("close", "remote", remote, "sni", sniHost, "rx", rx, "tx", tx, "dur", dur.Round(time.Millisecond).String())
 }
 
 // setKeepAlive 为一个 TCP 连接开启"心跳检测"。
@@ -370,9 +393,13 @@ func handleConnection(ctx context.Context, clientConn net.Conn, ref *RouterRef, 
 //
 // SetKeepAlive(true) → 开启"心跳检测"
 // SetKeepAlivePeriod(15s) → 每15秒发送一次心跳
-func setSocketBuf(conn *net.TCPConn) {
-	conn.SetReadBuffer(256 * 1024)  // 256KB 读缓冲
-	conn.SetWriteBuffer(256 * 1024) // 256KB 写缓冲
+func setSocketBuf(conn *net.TCPConn, logger *slog.Logger) {
+	if err := conn.SetReadBuffer(256 * 1024); err != nil {
+		logger.Warn("set read buffer failed", "error", err)
+	}
+	if err := conn.SetWriteBuffer(256 * 1024); err != nil {
+		logger.Warn("set write buffer failed", "error", err)
+	}
 }
 
 func setKeepAlive(conn *net.TCPConn) {

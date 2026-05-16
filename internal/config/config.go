@@ -46,6 +46,7 @@ type Config struct {
 	Routes         []Route `yaml:"routes"`          // 路由规则数组
 	LogLevel       string  `yaml:"log_level"`       // 日志级别: debug/info/warn/error,默认 "error"
 	LogFile        string  `yaml:"log_file"`        // 日志文件路径,默认空(仅 stdout)
+	DebugAddr      string  `yaml:"debug_addr"`      // pprof 监听地址,空=禁用
 
 	r *router.Router // 内部路由器(不导出,用 Router() 方法访问)
 }

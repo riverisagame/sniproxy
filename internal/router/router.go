@@ -104,25 +104,37 @@ func New(routes map[string][]string, defaultBackend string) *Router {
 //
 // 时间复杂度：O(1)——最多两次 map 查找
 func (r *Router) Lookup(sni string) string {
-	// 第一步：精确匹配
-	// map 的 comma-ok 模式：b 是值,ok 表示 key 是否存在
 	if b, ok := r.exact[sni]; ok {
 		return b
 	}
-
-	// 第二步：通配符匹配
-	// strings.IndexByte 查找第一个 '.' 的位置
-	// 比如 "www.example.com" → idx=3
 	if idx := strings.IndexByte(sni, '.'); idx != -1 {
-		// 取 '.' 后面的部分
-		// "www.example.com"[4:] = "example.com"
 		domain := sni[idx+1:]
 		if b, ok := r.wildcard[domain]; ok {
 			return b
 		}
 	}
+	return r.def
+}
 
-	// 第三步：都没匹配到,返回默认后端
+// LookupBytes 根据 SNI 域名字节查找对应的后端地址。
+// 与 Lookup 相同,但接收 []byte 避免字符串分配。
+func (r *Router) LookupBytes(b []byte) string {
+	// Go 编译器优化临时 string(b) 转换用于 map 查找——零堆分配
+	if backend, ok := r.exact[string(b)]; ok {
+		return backend
+	}
+
+	// 找到第一个 '.' 的位置用于通配符匹配
+	for i := 0; i < len(b); i++ {
+		if b[i] == '.' {
+			domain := string(b[i+1:])
+			if backend, ok := r.wildcard[domain]; ok {
+				return backend
+			}
+			break
+		}
+	}
+
 	return r.def
 }
 

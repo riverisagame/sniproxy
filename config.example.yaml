@@ -3,6 +3,7 @@ default_backend: "127.0.0.1:8443"
 max_connections: 0
 log_level: "error"
 log_file: ""
+debug_addr: ""  # pprof 监听地址,如 "127.0.0.1:6060",空=禁用
 
 routes:
   - sni:
